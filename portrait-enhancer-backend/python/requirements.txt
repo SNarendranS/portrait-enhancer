@@ -1,0 +1,17 @@
+# Core image processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# GFPGAN face restoration + Real-ESRGAN upscaling
+gfpgan>=1.3.8
+realesrgan>=0.3.0
+basicsr>=1.4.2
+facexlib>=0.3.0
+
+# Torch — CPU only (no CUDA needed, saves ~2GB download)
+# Pin torchvision < 0.16 so functional_tensor is still present.
+# The shim in enhance_gfpgan.py also guards against it at runtime.
+# If you have a GPU, replace these two lines with the CUDA builds.
+torch>=2.0.0,<2.3.0 --index-url https://download.pytorch.org/whl/cpu
+torchvision>=0.15.0,<0.18.0 --index-url https://download.pytorch.org/whl/cpu

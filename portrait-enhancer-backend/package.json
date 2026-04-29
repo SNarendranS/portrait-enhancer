@@ -1,0 +1,22 @@
+{
+  "name": "portrait-enhancer-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev":           "node --watch src/index.js",
+    "start":         "node src/index.js",
+    "setup:python":  "py -m pip install -r python/requirements.txt --break-system-packages",
+    "setup:models":  "python python/download_models.py"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "axios":       "^1.7.9",
+    "cloudinary":  "^2.5.1",
+    "cors":        "^2.8.5",
+    "dotenv":      "^16.4.7",
+    "express":     "^4.21.2",
+    "form-data":   "^4.0.1",
+    "multer":      "^1.4.5-lts.1",
+    "sharp":       "^0.33.5"
+  }
+}
