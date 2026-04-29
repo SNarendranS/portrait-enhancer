@@ -1,6 +1,7 @@
 import express from "express";
-import multer from "multer";
-import { runPipeline } from "../services/pipeline.js";
+import multer  from "multer";
+import { runSelected }      from "../services/runner.js";
+import { SERVICE_REGISTRY } from "../services/registry.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -14,28 +15,82 @@ const upload = multer({
 export const enhanceRouter = express.Router();
 
 /**
+ * GET /api/enhance/services
+ *
+ * Returns the full service list with availability flags.
+ * Frontend uses this to build the service selector — nothing is hardcoded.
+ *
+ * Response shape:
+ * {
+ *   services: [
+ *     { id, name, tier, type, description, available: true|false }
+ *   ]
+ * }
+ */
+enhanceRouter.get("/services", (_, res) => {
+  const services = SERVICE_REGISTRY.map(svc => ({
+    id:          svc.id,
+    name:        svc.name,
+    tier:        svc.tier,
+    type:        svc.type,
+    description: svc.description,
+    available:   svc.isAvailable(),
+  }));
+  res.json({ services });
+});
+
+/**
  * POST /api/enhance
- * Body: multipart/form-data  { image: File }
- * Returns: JSON { success, pipeline, usedService, imageBase64, mimeType, durationMs }
+ *
+ * Body: multipart/form-data
+ *   image            — image file
+ *   selectedServices — JSON array of service IDs, e.g. '["gemini","opencv"]'
+ *                      If omitted, runs all available services.
+ *
+ * Response:
+ * {
+ *   success: boolean,
+ *   results: [
+ *     { serviceId, serviceName, status: "success"|"failed",
+ *       ms, imageBase64?, mimeType?, error? }
+ *   ],
+ *   durationMs: number
+ * }
  */
 enhanceRouter.post("/", upload.single("image"), async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ success: false, message: "No image uploaded" });
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No image uploaded" });
+    }
 
-    const result = await runPipeline(req.file.buffer, req.file.mimetype);
+    // Parse selectedServices (sent as JSON string in form-data)
+    let selectedIds;
+    if (req.body.selectedServices) {
+      try {
+        selectedIds = JSON.parse(req.body.selectedServices);
+      } catch {
+        return res.status(400).json({ success: false, message: "selectedServices must be a JSON array of service IDs" });
+      }
+    } else {
+      // Default: run all available services
+      selectedIds = SERVICE_REGISTRY.filter(s => s.isAvailable()).map(s => s.id);
+    }
+
+    console.log(`\n🖼  Enhancing with services: [${selectedIds.join(", ")}]`);
+
+    const result = await runSelected(selectedIds, req.file.buffer, req.file.mimetype);
     res.json(result);
   } catch (err) {
     next(err);
   }
 });
 
-/** GET /api/enhance/status — shows which services are configured */
+// ── Legacy status endpoint — kept for backwards compatibility ──────────────────
+/** @deprecated Use GET /api/enhance/services instead */
 enhanceRouter.get("/status", (_, res) => {
-  res.json({
-    gemini:     !!process.env.GEMINI_API_KEY,
-    stability:  !!process.env.STABILITY_API_KEY,
-    cloudinary: !!process.env.CLOUDINARY_CLOUD_NAME,
-    gfpgan:     true, // always available (local)
-    opencv:     true, // always available (local)
-  });
+  const legacy = {};
+  for (const svc of SERVICE_REGISTRY) {
+    legacy[svc.id] = svc.isAvailable();
+  }
+  res.json(legacy);
 });

@@ -6,7 +6,7 @@
     "dev":           "node --watch src/index.js",
     "start":         "node src/index.js",
     "setup:python":  "py -m pip install -r python/requirements.txt --break-system-packages",
-    "setup:models":  "python python/download_models.py"
+    "setup:models":  "py python/download_models.py"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
