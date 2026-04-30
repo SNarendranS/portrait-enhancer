@@ -1,26 +1,32 @@
 /**
  * PicWish AI — portrait enhancement API
  * Free: 3 credits/day on free account (no billing needed)
- * Sign up: https://picwish.com  → API → get key
- * Specifically trained for portrait enhancement: skin, lighting, sharpness.
- * Quality is close to Gemini for portraits.
+ * Sign up: https://picwish.com → API → get key
+ *
+ * Correct base URL: https://techhk.aoscdn.com  (NOT picwish.com)
+ * Endpoint:  POST /api/tasks/visual/scale   (async, upload file)
+ * Poll:       GET /api/tasks/visual/scale/{task_id}
+ * Result field: data.image  (when data.state === 1)
  */
 
 import axios    from "axios";
 import FormData from "form-data";
 
+const BASE = "https://techhk.aoscdn.com";
+
 export async function enhanceWithPicwish(imageBuffer, mimeType) {
   if (!process.env.PICWISH_API_KEY) throw new Error("PICWISH_API_KEY not set");
 
-  // Step 1: Upload image and request enhancement
+  // Step 1: Upload image and create enhancement task
   const form = new FormData();
   form.append("image_file", imageBuffer, {
     filename:    "photo.jpg",
     contentType: mimeType || "image/jpeg",
   });
+  form.append("sync", "0"); // async mode
 
   const uploadRes = await axios.post(
-    "https://www.picwish.com/api/v1/task/visual/enhance-face",
+    `${BASE}/api/tasks/visual/scale`,
     form,
     {
       headers: {
@@ -31,30 +37,30 @@ export async function enhanceWithPicwish(imageBuffer, mimeType) {
     }
   );
 
-  if (uploadRes.data?.status !== 100) {
+  if (uploadRes.data?.status !== 200) {
     throw new Error(`PicWish upload failed: ${JSON.stringify(uploadRes.data)}`);
   }
 
   const taskId = uploadRes.data?.data?.task_id;
   if (!taskId) throw new Error("PicWish returned no task_id");
 
-  // Step 2: Poll for result (usually ready in 3–8 seconds)
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 2000));
+  // Step 2: Poll for result (state=1 means done, state<0 means error)
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 1000));
 
     const pollRes = await axios.get(
-      `https://www.picwish.com/api/v1/task/${taskId}`,
+      `${BASE}/api/tasks/visual/scale/${taskId}`,
       {
         headers: { "X-API-KEY": process.env.PICWISH_API_KEY },
         timeout: 10_000,
       }
     );
 
-    const status = pollRes.data?.status;
-    if (status === 200) {
-      // Download the result image
-      const imageUrl = pollRes.data?.data?.result_url;
-      if (!imageUrl) throw new Error("PicWish: no result_url in response");
+    const state = pollRes.data?.data?.state;
+
+    if (state === 1) {
+      const imageUrl = pollRes.data?.data?.image;
+      if (!imageUrl) throw new Error("PicWish: no image URL in result");
 
       const imgRes = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 30_000 });
       return {
@@ -63,10 +69,11 @@ export async function enhanceWithPicwish(imageBuffer, mimeType) {
       };
     }
 
-    if (status !== 100 && status !== 101) {
-      throw new Error(`PicWish task failed with status: ${status}`);
+    if (state < 0) {
+      throw new Error(`PicWish task failed with state: ${state} — ${JSON.stringify(pollRes.data)}`);
     }
+    // state 0 = pending, keep polling
   }
 
-  throw new Error("PicWish timed out waiting for result");
+  throw new Error("PicWish timed out waiting for result (30s)");
 }

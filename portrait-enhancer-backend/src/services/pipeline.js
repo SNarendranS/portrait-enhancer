@@ -69,18 +69,18 @@ export async function runParallel(imageBuffer, mimeType, selectedIds = null) {
 
   const results = await Promise.allSettled(
     services.map(async svc => {
-      if (!svc.enabled()) return { id: svc.id, name: svc.name, status: "skipped", reason: "not configured" };
+      if (!svc.enabled()) return { serviceId: svc.id, serviceName: svc.name, status: "skipped", error: "not configured" };
       const t0 = Date.now();
       try {
         console.log(`  → starting ${svc.name}…`);
         const result = await svc.fn(imageBuffer, mimeType);
         const ms = Date.now() - t0;
         console.log(`  ✓ ${svc.name} done in ${ms}ms`);
-        return { id: svc.id, name: svc.name, status: "success", ms, imageBase64: result.imageBase64, mimeType: result.mimeType || "image/jpeg" };
+        return { serviceId: svc.id, serviceName: svc.name, status: "success", ms, imageBase64: result.imageBase64, mimeType: result.mimeType || "image/jpeg" };
       } catch (err) {
         const ms = Date.now() - t0;
         console.warn(`  ✗ ${svc.name} failed in ${ms}ms: ${err.message}`);
-        return { id: svc.id, name: svc.name, status: "failed", reason: err.message, ms };
+        return { serviceId: svc.id, serviceName: svc.name, status: "failed", error: err.message, ms };
       }
     })
   );

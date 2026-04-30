@@ -4,6 +4,24 @@ Real-ESRGAN x4 upscale + OpenCV post-process for overall image quality.
 No face detection — runs faster than GFPGAN, better background/texture.
 """
 import argparse, os, sys
+
+# ── torchvision ≥0.16 removed functional_tensor; patch it back so older
+#    realesrgan/basicsr builds that import it directly don't crash. ──────
+import types, importlib
+try:
+    import torchvision.transforms.functional_tensor  # noqa: already present
+except ModuleNotFoundError:
+    try:
+        import torchvision.transforms.functional as _f
+        _shim = types.ModuleType("torchvision.transforms.functional_tensor")
+        for _attr in dir(_f):
+            setattr(_shim, _attr, getattr(_f, _attr))
+        import torchvision.transforms as _t
+        _t.functional_tensor = _shim
+        sys.modules["torchvision.transforms.functional_tensor"] = _shim
+    except Exception:
+        pass  # best-effort; real import errors will surface later
+
 import cv2, numpy as np
 from PIL import Image, ImageEnhance
 

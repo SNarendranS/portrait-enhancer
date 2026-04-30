@@ -59,17 +59,14 @@ async function tryEndpoint({ api, model }, imageBase64, mimeType, apiKey) {
       signal:  controller.signal,
     });
 
-    if (res.status === 404 || res.status === 400) {
-      const err = await res.json().catch(() => ({}));
-      throw Object.assign(
-        new Error(err?.error?.message || `${model} not found`),
-        { isModelNotFound: true }
-      );
-    }
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+      const msg = err?.error?.message || `HTTP ${res.status}`;
+      // 404/400 = model not available on this API version
+      // 429 = quota exceeded for this model
+      // Both cases: try the next endpoint
+      const isTryNext = res.status === 404 || res.status === 400 || res.status === 429;
+      throw Object.assign(new Error(msg), { isTryNext });
     }
 
     const data  = await res.json();
@@ -101,7 +98,7 @@ export async function enhanceWithGemini(imageBuffer, mimeType) {
       const msg = err.message.slice(0, 100);
       console.log(`  [gemini] ✗ ${ep.model}: ${msg}`);
       errors.push(`${ep.api}/${ep.model}: ${err.message}`);
-      if (!err.isModelNotFound) break;
+      if (!err.isTryNext) break;
     }
   }
 

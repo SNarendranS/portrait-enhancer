@@ -1,6 +1,7 @@
 import express from "express";
 import multer  from "multer";
-import { runPipeline, runParallel, SERVICES } from "../services/pipeline.js";
+import { runSelected }      from "../services/runner.js";
+import { SERVICE_REGISTRY } from "../services/registry.js";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -16,22 +17,43 @@ export const enhanceRouter = express.Router();
 enhanceRouter.post("/", upload.single("image"), async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: "No image uploaded" });
-    const selected = req.body.services ? JSON.parse(req.body.services) : null;
+
+    // Support both "selectedServices" (frontend) and legacy "services" field name
+    const raw = req.body.selectedServices ?? req.body.services ?? null;
+    const selected = raw ? JSON.parse(raw) : SERVICE_REGISTRY.map(s => s.id);
+
     console.log(`\nfile: ${req.file.originalname} size: ${req.file.size}`);
-    console.log(`🖼  Enhancing with services: ${JSON.stringify(selected ?? "all")}`);
-    const result = await runParallel(req.file.buffer, req.file.mimetype, selected);
+    console.log(`Enhancing with services: ${JSON.stringify(selected)}`);
+
+    const result = await runSelected(selected, req.file.buffer, req.file.mimetype);
     res.json(result);
   } catch (err) { next(err); }
 });
 
-// GET /api/enhance/status
+// GET /api/enhance/services  — full service metadata for the frontend
+enhanceRouter.get("/services", (_, res) => {
+  res.json({
+    services: SERVICE_REGISTRY.map(s => ({
+      id:          s.id,
+      name:        s.name,
+      tier:        s.tier,
+      type:        s.type,
+      description: s.description,
+      available:   s.isAvailable(),
+    })),
+  });
+});
+
+// GET /api/enhance/status  — backwards-compat alias for /services
 enhanceRouter.get("/status", (_, res) => {
-  res.json(
-    Object.fromEntries(SERVICES.map(s => [s.id, {
-      configured: s.enabled(),
-      name: s.name,
-      tier: s.tier,
-      note: s.note,
-    }]))
-  );
+  res.json({
+    services: SERVICE_REGISTRY.map(s => ({
+      id:          s.id,
+      name:        s.name,
+      tier:        s.tier,
+      type:        s.type,
+      description: s.description,
+      available:   s.isAvailable(),
+    })),
+  });
 });
