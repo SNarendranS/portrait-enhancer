@@ -2,7 +2,12 @@
  * OpenCV + Pillow — rule-based, always works, no models needed
  * Bilateral filter, CLAHE, teeth whitening, sharpening.
  * Not AI, but deterministic and fast. The unbreakable floor.
- * Uses async spawn for non-blocking execution.
+ *
+ * PYTHON_CMD resolution order:
+ *   1. PYTHON_CMD env var (set this in .env to your venv python absolute path)
+ *   2. "py" on Windows (Python Launcher — works if Python installed from python.org)
+ *   3. "python" fallback
+ *   4. "python3" fallback (Linux/Mac)
  */
 
 import { spawn }        from "child_process";
@@ -12,10 +17,15 @@ import { join }         from "path";
 import { fileURLToPath } from "url";
 import { dirname }       from "path";
 
-const __dir      = dirname(fileURLToPath(import.meta.url));
-const SCRIPT     = join(__dir, "../../python/enhance_opencv.py");
+const __dir  = dirname(fileURLToPath(import.meta.url));
+const SCRIPT = join(__dir, "../../python/enhance_opencv.py");
 
-const PYTHON_CMD = process.env.PYTHON_CMD ?? (process.platform === "win32" ? "py" : "python3");
+// Resolve which python executable to use
+function getPythonCmd() {
+  if (process.env.PYTHON_CMD) return [process.env.PYTHON_CMD];
+  if (process.platform === "win32") return ["py", "python"];
+  return ["python3", "python"];
+}
 
 function spawnAsync(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -34,7 +44,14 @@ function spawnAsync(cmd, args, opts = {}) {
       }
     });
 
-    proc.on("error", err => reject(new Error(`Failed to start process: ${err.message}`)));
+    // Better error message: include the command that failed
+    proc.on("error", err => {
+      if (err.code === "ENOENT") {
+        reject(new Error(`Python not found: "${cmd}" is not in PATH. Set PYTHON_CMD in .env to the full path of your python executable.`));
+      } else {
+        reject(new Error(`Failed to start "${cmd}": ${err.message}`));
+      }
+    });
 
     const timeout = opts.timeout ?? 60_000;
     const timer = setTimeout(() => {
@@ -59,14 +76,28 @@ export async function enhanceWithOpenCV(imageBuffer, mimeType) {
   try {
     await writeFile(inPath, imageBuffer);
 
-    await spawnAsync(
-      PYTHON_CMD,
-      [SCRIPT, "--input", inPath, "--output", outPath],
-      {
-        timeout: 60_000,
-        env: { ...process.env },
+    // Try each python command until one works
+    const pythonCmds = getPythonCmd();
+    let lastErr;
+    for (const cmd of pythonCmds) {
+      try {
+        await spawnAsync(
+          cmd,
+          [SCRIPT, "--input", inPath, "--output", outPath],
+          { timeout: 60_000, env: { ...process.env } }
+        );
+        lastErr = null;
+        break; // success
+      } catch (err) {
+        lastErr = err;
+        // Only try next cmd if it's a "not found" error
+        if (!err.message.includes("not in PATH") && !err.message.includes("not found")) {
+          throw err;
+        }
+        console.warn(`  [opencv] "${cmd}" not found, trying next...`);
       }
-    );
+    }
+    if (lastErr) throw lastErr;
 
     try { await access(outPath); } catch {
       throw new Error("OpenCV produced no output file");

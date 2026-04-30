@@ -1,11 +1,14 @@
 /**
  * GFPGAN + Real-ESRGAN — local Python, fully free, self-hosted
- * Runs python/enhance_gfpgan.py via async spawn (not spawnSync).
- * Uses "py" on Windows (configurable via PYTHON_CMD env var).
+ * Runs python/enhance_gfpgan.py via async spawn.
+ *
+ * PYTHON_CMD resolution order:
+ *   1. PYTHON_CMD env var (set this in .env to your venv python absolute path)
+ *   2. "py" on Windows (Python Launcher)
+ *   3. "python" fallback
+ *   4. "python3" fallback (Linux/Mac)
  *
  * First run downloads weights (~340MB) once; subsequent runs are faster.
- * Cold-start model loading is normal — subsequent calls within the same
- * process reuse the loaded model via a persistent Python daemon (below).
  */
 
 import { spawn }        from "child_process";
@@ -15,11 +18,14 @@ import { join }         from "path";
 import { fileURLToPath } from "url";
 import { dirname }       from "path";
 
-const __dir      = dirname(fileURLToPath(import.meta.url));
-const SCRIPT     = join(__dir, "../../python/enhance_gfpgan.py");
+const __dir  = dirname(fileURLToPath(import.meta.url));
+const SCRIPT = join(__dir, "../../python/enhance_gfpgan.py");
 
-// Windows default is "py", override with PYTHON_CMD env var
-const PYTHON_CMD = process.env.PYTHON_CMD ?? (process.platform === "win32" ? "py" : "python3");
+function getPythonCmd() {
+  if (process.env.PYTHON_CMD) return [process.env.PYTHON_CMD];
+  if (process.platform === "win32") return ["py", "python"];
+  return ["python3", "python"];
+}
 
 function spawnAsync(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -38,9 +44,14 @@ function spawnAsync(cmd, args, opts = {}) {
       }
     });
 
-    proc.on("error", err => reject(new Error(`Failed to start process: ${err.message}`)));
+    proc.on("error", err => {
+      if (err.code === "ENOENT") {
+        reject(new Error(`Python not found: "${cmd}" is not in PATH. Set PYTHON_CMD in .env to the full path of your python executable.`));
+      } else {
+        reject(new Error(`Failed to start "${cmd}": ${err.message}`));
+      }
+    });
 
-    // Timeout
     const timeout = opts.timeout ?? 300_000;
     const timer = setTimeout(() => {
       proc.kill("SIGTERM");
@@ -52,7 +63,6 @@ function spawnAsync(cmd, args, opts = {}) {
 }
 
 export async function enhanceWithGFPGAN(imageBuffer, mimeType) {
-  // Verify script exists
   try { await access(SCRIPT); } catch {
     throw new Error("GFPGAN script not found — run: npm run setup:python");
   }
@@ -65,27 +75,36 @@ export async function enhanceWithGFPGAN(imageBuffer, mimeType) {
   try {
     await writeFile(inPath, imageBuffer);
 
-    await spawnAsync(
-      PYTHON_CMD,
-      [SCRIPT, "--input", inPath, "--output", outPath],
-      {
-        timeout: 300_000, // 5 min max
-        env: { ...process.env },
+    const pythonCmds = getPythonCmd();
+    let lastErr;
+    for (const cmd of pythonCmds) {
+      try {
+        await spawnAsync(
+          cmd,
+          [SCRIPT, "--input", inPath, "--output", outPath],
+          { timeout: 300_000, env: { ...process.env } }
+        );
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (!err.message.includes("not in PATH") && !err.message.includes("not found")) {
+          throw err;
+        }
+        console.warn(`  [gfpgan] "${cmd}" not found, trying next...`);
       }
-    );
+    }
+    if (lastErr) throw lastErr;
 
-    // Verify output exists
     try { await access(outPath); } catch {
       throw new Error("GFPGAN produced no output file");
     }
 
-    const outputBuffer = await readFile(outPath);
     return {
-      imageBase64: outputBuffer.toString("base64"),
+      imageBase64: (await readFile(outPath)).toString("base64"),
       mimeType:    "image/jpeg",
     };
   } finally {
-    // Async cleanup — don't await, fire-and-forget
     unlink(inPath).catch(() => {});
     unlink(outPath).catch(() => {});
   }

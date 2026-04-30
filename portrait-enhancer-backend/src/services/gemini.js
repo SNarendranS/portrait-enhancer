@@ -1,11 +1,13 @@
 /**
- * Gemini 2.0 Flash — image editing via Imagen
+ * Gemini image generation — portrait enhancement
  * Free: 1500 requests/day via Google AI Studio key (no billing required)
  * Docs: https://ai.google.dev/gemini-api/docs/image-generation
  *
- * Model renamed: gemini-2.0-flash-exp-image-generation is now
- * gemini-2.0-flash-preview-image-generation (or use gemini-2.0-flash-exp
- * with responseModalities IMAGE).
+ * Model history (they rename these constantly):
+ *   gemini-2.0-flash-exp-image-generation     — original working name
+ *   gemini-2.0-flash-preview-image-generation — renamed, now 404
+ *   gemini-3.1-flash-image-preview            — latest (Feb 2026)
+ *   gemini-2.5-flash-image                    — also available
  */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -35,11 +37,11 @@ Overall:
 - no artificial filters, no over-smoothing, no exaggerated features
 - maintain original facial structure and likeness exactly`;
 
-// Models to try in order (Google renames these periodically)
+// Try newest → oldest. Update the first entry when Google releases new models.
 const CANDIDATE_MODELS = [
-  "gemini-2.0-flash-preview-image-generation",
-  "gemini-2.0-flash-exp-image-generation",
-  "gemini-2.0-flash-exp",
+  "gemini-3.1-flash-image-preview",       // newest (Feb 2026)
+  "gemini-2.5-flash-image",               // stable alternative
+  "gemini-2.0-flash-exp-image-generation", // original working name
 ];
 
 export async function enhanceWithGemini(imageBuffer, mimeType) {
@@ -57,6 +59,7 @@ export async function enhanceWithGemini(imageBuffer, mimeType) {
   let lastError;
   for (const modelName of CANDIDATE_MODELS) {
     try {
+      console.log(`  [gemini] trying model: ${modelName}`);
       const model = genAI.getGenerativeModel({ model: modelName });
 
       const result = await model.generateContent({
@@ -70,19 +73,24 @@ export async function enhanceWithGemini(imageBuffer, mimeType) {
       const imgPart = parts.find((p) => p.inlineData?.mimeType?.startsWith("image/"));
       if (!imgPart) {
         const textPart = parts.find((p) => p.text);
-        throw new Error(`No image in response. Text: ${textPart?.text?.slice(0, 100) ?? "none"}`);
+        throw new Error(`No image in response. Text: ${textPart?.text?.slice(0, 200) ?? "none"}`);
       }
 
+      console.log(`  [gemini] success with model: ${modelName}`);
       return {
         imageBase64: imgPart.inlineData.data,
         mimeType:    imgPart.inlineData.mimeType,
       };
     } catch (err) {
       lastError = err;
-      // Only continue to next model if it's a 404/not-found error
-      if (!err.message?.includes("404") && !err.message?.includes("not found")) {
-        throw err;
-      }
+      const msg = err.message ?? "";
+      // Only try next model on 404/not-found/403-suspended errors
+      const shouldRetry =
+        msg.includes("404") ||
+        msg.includes("not found") ||
+        msg.includes("not supported for generateContent");
+      if (!shouldRetry) throw err;
+      console.warn(`  [gemini] ${modelName} failed (${msg.slice(0, 80)}), trying next...`);
     }
   }
 

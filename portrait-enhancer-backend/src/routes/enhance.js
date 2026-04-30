@@ -58,6 +58,7 @@ enhanceRouter.get("/services", (_, res) => {
  * }
  */
 enhanceRouter.post("/", upload.single("image"), async (req, res, next) => {
+    console.log("file:", req.file?.originalname, "size:", req.file?.buffer?.length);
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: "No image uploaded" });
