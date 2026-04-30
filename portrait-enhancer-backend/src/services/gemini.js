@@ -27,15 +27,9 @@ Overall:
 
 // Try v1alpha first — has wider model support than v1beta for experimental models
 const ENDPOINTS = [
-  // gemini-2.0-flash-exp supports image generation on free tier
-  { api: "v1beta",  model: "gemini-2.0-flash-exp" },
-  { api: "v1alpha", model: "gemini-2.0-flash-exp" },
-  // Preview image generation models (may need paid tier)
-  { api: "v1beta",  model: "gemini-2.0-flash-preview-image-generation" },
-  { api: "v1alpha", model: "gemini-2.0-flash-preview-image-generation" },
-  // 2.5 flash preview (paid tier only)
-  { api: "v1beta",  model: "gemini-2.5-flash-preview-05-20" },
-  { api: "v1alpha", model: "gemini-2.5-flash-preview-05-20" },
+  { api: "v1beta", model: "gemini-3.1-flash-image-preview" },
+  { api: "v1beta", model: "gemini-2.5-flash-image" },
+  { api: "v1beta", model: "gemini-3-pro-image-preview" },
 ];
 
 async function tryEndpoint({ api, model }, imageBase64, mimeType, apiKey) {
@@ -49,7 +43,7 @@ async function tryEndpoint({ api, model }, imageBase64, mimeType, apiKey) {
         { text: PROMPT },
       ],
     }],
-    generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+    generationConfig: { responseModalities: ["IMAGE"] }
   };
 
   const controller = new AbortController();
