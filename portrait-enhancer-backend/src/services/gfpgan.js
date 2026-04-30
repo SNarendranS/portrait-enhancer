@@ -47,7 +47,7 @@ function runScript(python, args, timeoutMs, env) {
 
     proc.on("close", code => {
       clearTimeout(timer);
-      if (killed) return reject(new Error("GFPGAN timed out (5 min). First run loads ~340 MB — try again."));
+      if (killed) return reject(new Error("GFPGAN timed out (8 min). First run loads ~340 MB + facexlib weights — try again, subsequent runs are faster."));
       if (code !== 0) {
         const msg = Buffer.concat(stderr).toString()
           .split("\n")
@@ -77,7 +77,7 @@ export async function enhanceWithGFPGAN(imageBuffer, mimeType) {
     await runScript(
       python,
       ["-W", "ignore", script, "--input", inPath, "--output", outPath],
-      300_000,
+      480_000,  // 8 min — first run loads ~340MB models + facexlib weights
       { ...process.env, PYTHONWARNINGS: "ignore" }
     );
     if (!existsSync(outPath)) throw new Error("GFPGAN produced no output file");

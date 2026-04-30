@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-OpenCV + Pillow enhanced pipeline v2.
-Major additions vs v1:
-  - Highlight recovery (fixes overexposed ceiling/background)
-  - Adaptive exposure correction per-region
-  - Stronger skin tone correction for warm/orange cast
-  - Better teeth whitening
-  - Portrait-aware contrast (face region gets more attention)
+OpenCV + Pillow portrait enhancement pipeline v3.
+Fixes vs v2:
+  - Gamma correction first to dim overexposed office lighting
+  - Softer highlight recovery (more aggressive threshold + strength)
+  - CLAHE clip reduced to 1.5 (was 2.5) — avoids artificial brightening
+  - Unsharp mask strength reduced (was 1.8/-0.8, now 1.4/-0.4)
+  - Saturation/sharpness dialed back
 """
 import argparse, sys
 import cv2, numpy as np
@@ -16,58 +16,71 @@ def enhance(inp, out):
     img = cv2.imread(inp, cv2.IMREAD_COLOR)
     if img is None: raise ValueError(f"Cannot read: {inp}")
 
-    # 1. Highlight recovery — pull down blown-out areas (overexposed ceiling)
+    # 1. Gamma correction — dim overall exposure first (office lighting is harsh)
+    img = gamma_correct(img, gamma=1.25)  # >1 darkens, fixes overexposed office shot
+
+    # 2. Highlight recovery — pull down blown-out ceiling/background
     img = recover_highlights(img)
 
-    # 2. Denoise
-    img = cv2.fastNlMeansDenoisingColored(img, None, 5, 5, 7, 21)
+    # 3. Denoise (mild)
+    img = cv2.fastNlMeansDenoisingColored(img, None, 4, 4, 7, 21)
 
-    # 3. Bilateral skin smooth (preserves edges/texture)
-    smooth = cv2.bilateralFilter(img, 9, 75, 75)
-    img = cv2.addWeighted(smooth, 0.65, img, 0.35, 0)
+    # 4. Bilateral skin smooth
+    smooth = cv2.bilateralFilter(img, 9, 60, 60)
+    img = cv2.addWeighted(smooth, 0.55, img, 0.45, 0)
 
-    # 4. CLAHE — adaptive contrast (helps dark faces under harsh office lighting)
-    img = apply_clahe(img, clip=2.5)
+    # 5. CLAHE — reduced clip to avoid overbright
+    img = apply_clahe(img, clip=1.5)
 
-    # 5. Skin tone correction — reduce orange/warm cast from office fluorescent light
+    # 6. Skin tone correction — reduce warm/orange cast
     img = correct_skin_tone(img)
 
-    # 6. White balance
+    # 7. White balance
     img = white_balance(img)
 
-    # 7. Teeth whitening
+    # 8. Teeth whitening
     img = whiten_teeth(img)
 
-    # 8. Saturation + contrast via Pillow
+    # 9. Saturation + contrast via Pillow (gentler than before)
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    pil = ImageEnhance.Color(pil).enhance(1.15)
-    pil = ImageEnhance.Contrast(pil).enhance(1.08)
-    pil = ImageEnhance.Sharpness(pil).enhance(1.4)
+    pil = ImageEnhance.Color(pil).enhance(1.10)
+    pil = ImageEnhance.Contrast(pil).enhance(1.05)
+    pil = ImageEnhance.Sharpness(pil).enhance(1.2)
     img = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
-    # 9. Unsharp mask
+    # 10. Mild unsharp mask
     blurred = cv2.GaussianBlur(img, (0, 0), 1.5)
-    img = cv2.addWeighted(img, 1.8, blurred, -0.8, 0)
+    img = cv2.addWeighted(img, 1.4, blurred, -0.4, 0)
     img = np.clip(img, 0, 255).astype(np.uint8)
 
     cv2.imwrite(out, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
     print(f"Saved: {out}", file=sys.stderr)
 
 
+def gamma_correct(img, gamma=1.25):
+    """gamma > 1 darkens image (corrects overexposure)."""
+    inv_gamma = 1.0 / gamma
+    table = np.array([
+        ((i / 255.0) ** inv_gamma) * 255
+        for i in range(256)
+    ]).astype(np.uint8)
+    return cv2.LUT(img, table)
+
+
 def recover_highlights(img):
     """Pull down overexposed regions without touching dark areas."""
     img_f = img.astype(np.float32) / 255.0
-    # Identify blown-out pixels (all channels > 0.85)
-    highlight_mask = np.all(img_f > 0.85, axis=2).astype(np.float32)
-    highlight_mask = cv2.GaussianBlur(highlight_mask, (21, 21), 0)
+    # Lower threshold (0.78 vs 0.85) catches more overexposed office ceiling
+    highlight_mask = np.all(img_f > 0.78, axis=2).astype(np.float32)
+    highlight_mask = cv2.GaussianBlur(highlight_mask, (31, 31), 0)
     highlight_mask = highlight_mask[:, :, np.newaxis]
-    # Compress highlights: tone-map bright areas down
-    compressed = 1.0 - (1.0 - img_f) ** 0.7
-    img_f = img_f * (1 - highlight_mask * 0.4) + compressed * (highlight_mask * 0.4)
+    # More aggressive tone-map
+    compressed = 1.0 - (1.0 - img_f) ** 0.6
+    img_f = img_f * (1 - highlight_mask * 0.55) + compressed * (highlight_mask * 0.55)
     return np.clip(img_f * 255, 0, 255).astype(np.uint8)
 
 
-def apply_clahe(img, clip=2.5):
+def apply_clahe(img, clip=1.5):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     l = cv2.createCLAHE(clipLimit=clip, tileGridSize=(8, 8)).apply(l)
@@ -75,11 +88,10 @@ def apply_clahe(img, clip=2.5):
 
 
 def correct_skin_tone(img):
-    """Reduce the warm/orange cast common under office fluorescent + overexposure."""
+    """Reduce warm/orange cast from office fluorescent overexposure."""
     img_f = img.astype(np.float32)
-    # Slightly cool down: reduce red, boost blue subtly
-    img_f[:, :, 2] = np.clip(img_f[:, :, 2] * 0.96, 0, 255)  # reduce R
-    img_f[:, :, 0] = np.clip(img_f[:, :, 0] * 1.03, 0, 255)  # boost B
+    img_f[:, :, 2] = np.clip(img_f[:, :, 2] * 0.95, 0, 255)  # reduce R
+    img_f[:, :, 0] = np.clip(img_f[:, :, 0] * 1.04, 0, 255)  # boost B
     return img_f.astype(np.uint8)
 
 
@@ -99,8 +111,8 @@ def whiten_teeth(img):
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV).astype(np.float32)
     mask = ((hsv[:, :, 2] > 150) & (hsv[:, :, 1] < 55)).astype(np.float32)
     mask = cv2.GaussianBlur(mask, (15, 15), 0)
-    hsv[:, :, 2] += mask * 20
-    hsv[:, :, 1] -= mask * 10
+    hsv[:, :, 2] += mask * 15
+    hsv[:, :, 1] -= mask * 8
     img[y1:y2, x1:x2] = cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2BGR)
     return img
 

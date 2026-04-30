@@ -44,7 +44,7 @@ function runScript(python, args, timeoutMs, env) {
 
     proc.on("close", code => {
       clearTimeout(timer);
-      if (killed) return reject(new Error("Real-ESRGAN timed out (3 min)"));
+      if (killed) return reject(new Error("Real-ESRGAN timed out (8 min). First run loads model weights — try again."));
       if (code !== 0) {
         const msg = Buffer.concat(stderr).toString()
           .split("\n")
@@ -74,7 +74,7 @@ export async function enhanceWithRealESRGAN(imageBuffer, mimeType) {
     await runScript(
       python,
       ["-W", "ignore", script, "--input", inPath, "--output", outPath],
-      180_000,
+      480_000,  // 8 min — first run loads model weights
       { ...process.env, PYTHONWARNINGS: "ignore" }
     );
     if (!existsSync(outPath)) throw new Error("Real-ESRGAN produced no output");

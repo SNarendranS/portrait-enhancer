@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GFPGAN + Real-ESRGAN portrait enhancer
-Called by Node.js via spawnSync.
+Called by Node.js via spawn.
 
 Usage: python enhance_gfpgan.py --input /tmp/in.jpg --output /tmp/out.jpg
 """
@@ -11,8 +11,6 @@ import os
 import sys
 
 # ── torchvision compatibility shim ────────────────────────────────────────────
-# torchvision >= 0.16 removed `torchvision.transforms.functional_tensor`.
-# basicsr / gfpgan still import it, so we stub it out before they load.
 import types as _types
 
 def _patch_torchvision():
@@ -47,9 +45,8 @@ def check_models():
 
 def _preload_facexlib():
     """
-    Pre-initialise facexlib detection + parsing models from our local
-    weights/ folder. Without this, facexlib re-downloads them to its own
-    cache on every cold start — causing the timeout to blow.
+    Pre-initialise facexlib models from local weights/ folder.
+    Without this, facexlib re-downloads them on every cold start.
     """
     detection_model = os.path.join(WEIGHTS_DIR, "detection_Resnet50_Final.pth")
     parsing_model   = os.path.join(WEIGHTS_DIR, "parsing_parsenet.pth")
@@ -57,7 +54,7 @@ def _preload_facexlib():
     if not os.path.exists(detection_model) or not os.path.exists(parsing_model):
         print(
             "  [warn] facexlib weights not found in weights/ — first run will download them.\n"
-            "  Run `python download_models.py` to pre-fetch and avoid this delay.",
+            "  Run `python download_models.py` to pre-fetch.",
             file=sys.stderr,
         )
         return
@@ -81,22 +78,17 @@ def _preload_facexlib():
             model_rootpath=WEIGHTS_DIR,
         )
     except Exception as e:
-        # Non-fatal — GFPGANer will still work, just may take longer
         print(f"  [warn] facexlib pre-load skipped: {e}", file=sys.stderr)
 
 
 def enhance(input_path, output_path):
     check_models()
-
-    # Pre-load facexlib from local weights to skip runtime downloads
     _preload_facexlib()
 
-    # ── Import GFPGAN (deferred so the shim above runs first) ─────────────
     from gfpgan import GFPGANer
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from realesrgan import RealESRGANer
 
-    # ── Load Real-ESRGAN for background upscaling ───────────────────────────
     realesrgan_model_path = os.path.join(WEIGHTS_DIR, "RealESRGAN_x2plus.pth")
     bg_upsampler = None
     if os.path.exists(realesrgan_model_path):
@@ -114,7 +106,6 @@ def enhance(input_path, output_path):
             half=False,
         )
 
-    # ── Load GFPGAN ─────────────────────────────────────────────────────────
     restorer = GFPGANer(
         model_path=GFPGAN_MODEL,
         upscale=2,
@@ -123,12 +114,15 @@ def enhance(input_path, output_path):
         bg_upsampler=bg_upsampler,
     )
 
-    # ── Read image ──────────────────────────────────────────────────────────
     img = cv2.imread(input_path, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError(f"Cannot read image: {input_path}")
 
-    # ── Enhance ─────────────────────────────────────────────────────────────
+    # Pre-process: gamma correct to tame the overexposed office lighting
+    # BEFORE passing to GFPGAN so it works on a better-exposed input
+    img = gamma_correct(img, gamma=1.2)
+    img = recover_highlights(img)
+
     _, _, output = restorer.enhance(
         img,
         has_aligned=False,
@@ -137,24 +131,42 @@ def enhance(input_path, output_path):
         weight=0.5,
     )
 
-    # ── Post-process ─────────────────────────────────────────────────────────
+    # Post-process: only mild sharpening, NO CLAHE (it was adding brightness)
     output = post_process(output)
 
-    # ── Save ────────────────────────────────────────────────────────────────
     cv2.imwrite(output_path, output, [cv2.IMWRITE_JPEG_QUALITY, 95])
     print(f"Saved enhanced image to {output_path}", file=sys.stderr)
 
 
+def gamma_correct(img, gamma=1.2):
+    """gamma > 1 darkens (corrects overexposure)."""
+    inv_gamma = 1.0 / gamma
+    table = np.array([
+        ((i / 255.0) ** inv_gamma) * 255
+        for i in range(256)
+    ]).astype(np.uint8)
+    return cv2.LUT(img, table)
+
+
+def recover_highlights(img):
+    """Pull down blown-out areas before GFPGAN processing."""
+    img_f = img.astype(np.float32) / 255.0
+    highlight_mask = np.all(img_f > 0.80, axis=2).astype(np.float32)
+    highlight_mask = cv2.GaussianBlur(highlight_mask, (25, 25), 0)
+    highlight_mask = highlight_mask[:, :, np.newaxis]
+    compressed = 1.0 - (1.0 - img_f) ** 0.65
+    img_f = img_f * (1 - highlight_mask * 0.45) + compressed * (highlight_mask * 0.45)
+    return np.clip(img_f * 255, 0, 255).astype(np.uint8)
+
+
 def post_process(img_bgr):
-    """Subtle CLAHE + sharpening on top of GFPGAN output."""
-    img = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(img)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    img = cv2.merge((l, a, b))
-    img = cv2.cvtColor(img, cv2.COLOR_LAB2BGR)
-    kernel = np.array([[0, -0.5, 0], [-0.5, 3, -0.5], [0, -0.5, 0]])
-    img = cv2.filter2D(img, -1, kernel)
+    """
+    Mild sharpening only — removed CLAHE which was adding brightness
+    to already overexposed background areas.
+    """
+    # Gentle sharpening kernel only
+    kernel = np.array([[0, -0.3, 0], [-0.3, 2.2, -0.3], [0, -0.3, 0]])
+    img = cv2.filter2D(img_bgr, -1, kernel)
     img = np.clip(img, 0, 255).astype(np.uint8)
     return img
 

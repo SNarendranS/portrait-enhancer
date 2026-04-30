@@ -4,8 +4,8 @@
  * Sign up: https://picwish.com → API → get key
  *
  * Correct base URL: https://techhk.aoscdn.com  (NOT picwish.com)
- * Endpoint:  POST /api/tasks/visual/scale   (async, upload file)
- * Poll:       GET /api/tasks/visual/scale/{task_id}
+ * Endpoint:  POST /api/tasks/visual/clarity   (portrait enhancement, async)
+ * Poll:       GET /api/tasks/visual/clarity/{task_id}
  * Result field: data.image  (when data.state === 1)
  */
 
@@ -26,7 +26,7 @@ export async function enhanceWithPicwish(imageBuffer, mimeType) {
   form.append("sync", "0"); // async mode
 
   const uploadRes = await axios.post(
-    `${BASE}/api/tasks/visual/scale`,
+    `${BASE}/api/tasks/visual/clarity`,
     form,
     {
       headers: {
@@ -49,7 +49,7 @@ export async function enhanceWithPicwish(imageBuffer, mimeType) {
     await new Promise(r => setTimeout(r, 1000));
 
     const pollRes = await axios.get(
-      `${BASE}/api/tasks/visual/scale/${taskId}`,
+      `${BASE}/api/tasks/visual/clarity/${taskId}`,
       {
         headers: { "X-API-KEY": process.env.PICWISH_API_KEY },
         timeout: 10_000,
