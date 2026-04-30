@@ -1,64 +1,93 @@
-/**
- * pipeline.js
- *
- * Tries each service in order. First success wins and returns.
- * Each service must return: { imageBase64: string, mimeType: string }
- * or throw if it fails (any error = try next).
- */
+import { enhanceWithGemini }      from "./gemini.js";
+import { enhanceWithStability }   from "./stability.js";
+import { enhanceWithCloudinary }  from "./cloudinary.js";
+import { enhanceWithPicwish }     from "./picwish.js";
+import { enhanceWithGFPGAN }      from "./gfpgan.js";
+import { enhanceWithRealESRGAN }  from "./realesrgan.js";
+import { enhanceWithOpenCV }      from "./opencv.js";
 
-import { enhanceWithGemini }     from "./gemini.js";
-import { enhanceWithStability }  from "./stability.js";
-import { enhanceWithCloudinary } from "./cloudinary.js";
-import { enhanceWithGFPGAN }     from "./gfpgan.js";
-import { enhanceWithOpenCV }     from "./opencv.js";
-
-const SERVICES = [
-  { name: "Gemini 2.0 Flash",      fn: enhanceWithGemini,     enabled: () => !!process.env.GEMINI_API_KEY },
-  { name: "Stability AI",          fn: enhanceWithStability,  enabled: () => !!process.env.STABILITY_API_KEY },
-  { name: "Cloudinary AI",         fn: enhanceWithCloudinary, enabled: () => !!process.env.CLOUDINARY_CLOUD_NAME },
-  { name: "GFPGAN (local Python)", fn: enhanceWithGFPGAN,     enabled: () => true },
-  { name: "OpenCV (local Python)", fn: enhanceWithOpenCV,     enabled: () => true },
+export const SERVICES = [
+  { id: "gemini",     name: "Gemini 2.5 Flash",      tier: "☁ Cloud",  note: "1500/day",   fn: enhanceWithGemini,     enabled: () => !!process.env.GEMINI_API_KEY },
+  { id: "stability",  name: "Stability AI",           tier: "☁ Cloud",  note: "25/mo",      fn: enhanceWithStability,  enabled: () => !!process.env.STABILITY_API_KEY },
+  { id: "cloudinary", name: "Cloudinary AI",          tier: "☁ Cloud",  note: "free tier",  fn: enhanceWithCloudinary, enabled: () => !!process.env.CLOUDINARY_CLOUD_NAME },
+  { id: "picwish",    name: "PicWish",                tier: "☁ Cloud",  note: "3/day",      fn: enhanceWithPicwish,    enabled: () => !!process.env.PICWISH_API_KEY },
+  { id: "gfpgan",     name: "GFPGAN (local)",         tier: "🖥 Local",  note: "unlimited",  fn: enhanceWithGFPGAN,     enabled: () => true },
+  { id: "realesrgan", name: "Real-ESRGAN (local)",    tier: "🖥 Local",  note: "unlimited",  fn: enhanceWithRealESRGAN, enabled: () => true },
+  { id: "opencv",     name: "OpenCV (local)",         tier: "🖥 Local",  note: "unlimited",  fn: enhanceWithOpenCV,     enabled: () => true },
 ];
 
-export async function runPipeline(imageBuffer, mimeType) {
-  const start = Date.now();
-  const log   = [];
+export async function runPipeline(imageBuffer, mimeType, selectedIds = null) {
+  const start    = Date.now();
+  const log      = [];
+  const services = selectedIds
+    ? SERVICES.filter(s => selectedIds.includes(s.id))
+    : SERVICES;
 
-  for (const svc of SERVICES) {
+  for (const svc of services) {
     if (!svc.enabled()) {
-      log.push({ service: svc.name, status: "skipped", reason: "not configured" });
+      log.push({ id: svc.id, service: svc.name, status: "skipped", reason: "not configured" });
       continue;
     }
 
     const t0 = Date.now();
     try {
-      console.log(`  → trying ${svc.name}...`);
+      console.log(`  → starting ${svc.name}…`);
       const result = await svc.fn(imageBuffer, mimeType);
       const ms = Date.now() - t0;
-
-      console.log(`  ✓ ${svc.name} succeeded in ${ms}ms`);
-      log.push({ service: svc.name, status: "success", ms });
+      console.log(`  ✓ ${svc.name} done in ${ms}ms`);
+      log.push({ id: svc.id, service: svc.name, status: "success", ms });
 
       return {
-        success:      true,
-        usedService:  svc.name,
-        imageBase64:  result.imageBase64,
-        mimeType:     result.mimeType || "image/jpeg",
-        pipeline:     log,
-        durationMs:   Date.now() - start,
+        success:     true,
+        usedService: svc.name,
+        imageBase64: result.imageBase64,
+        mimeType:    result.mimeType || "image/jpeg",
+        pipeline:    log,
+        durationMs:  Date.now() - start,
       };
     } catch (err) {
       const ms = Date.now() - t0;
-      console.warn(`  ✗ ${svc.name} failed (${ms}ms): ${err.message}`);
-      log.push({ service: svc.name, status: "failed", reason: err.message, ms });
+      console.warn(`  ✗ ${svc.name} failed in ${ms}ms: ${err.message}`);
+      log.push({ id: svc.id, service: svc.name, status: "failed", reason: err.message, ms });
     }
   }
 
-  // All services failed — should never happen because opencv is always last
   return {
     success:    false,
     message:    "All enhancement services failed",
     pipeline:   log,
+    durationMs: Date.now() - start,
+  };
+}
+
+// Run all selected services in PARALLEL — returns one result per service
+export async function runParallel(imageBuffer, mimeType, selectedIds = null) {
+  const start    = Date.now();
+  const services = selectedIds
+    ? SERVICES.filter(s => selectedIds.includes(s.id))
+    : SERVICES;
+
+  const results = await Promise.allSettled(
+    services.map(async svc => {
+      if (!svc.enabled()) return { id: svc.id, name: svc.name, status: "skipped", reason: "not configured" };
+      const t0 = Date.now();
+      try {
+        console.log(`  → starting ${svc.name}…`);
+        const result = await svc.fn(imageBuffer, mimeType);
+        const ms = Date.now() - t0;
+        console.log(`  ✓ ${svc.name} done in ${ms}ms`);
+        return { id: svc.id, name: svc.name, status: "success", ms, imageBase64: result.imageBase64, mimeType: result.mimeType || "image/jpeg" };
+      } catch (err) {
+        const ms = Date.now() - t0;
+        console.warn(`  ✗ ${svc.name} failed in ${ms}ms: ${err.message}`);
+        return { id: svc.id, name: svc.name, status: "failed", reason: err.message, ms };
+      }
+    })
+  );
+
+  return {
+    success:    true,
+    results:    results.map(r => r.value ?? { status: "error", reason: r.reason?.message }),
     durationMs: Date.now() - start,
   };
 }

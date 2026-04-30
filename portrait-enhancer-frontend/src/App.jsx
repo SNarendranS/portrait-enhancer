@@ -35,7 +35,7 @@ export default function App() {
   // Fetch service list from backend
   useEffect(() => {
     setServicesLoading(true);
-    fetch("/api/enhance/services")
+    fetch("/api/enhance/status")
       .then(r => r.json())
       .then(data => {
         setServices(data.services ?? []);

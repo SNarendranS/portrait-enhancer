@@ -1,18 +1,9 @@
 /**
- * Gemini image generation — portrait enhancement
- * Free: 1500 requests/day via Google AI Studio key (no billing required)
- * Docs: https://ai.google.dev/gemini-api/docs/image-generation
- *
- * Model history (they rename these constantly):
- *   gemini-2.0-flash-exp-image-generation     — original working name
- *   gemini-2.0-flash-preview-image-generation — renamed, now 404
- *   gemini-3.1-flash-image-preview            — latest (Feb 2026)
- *   gemini-2.5-flash-image                    — also available
+ * Gemini — uses v1alpha API which has broader model availability than v1beta
+ * Also adds a longer timeout since the model is slow on first inference
  */
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
-const PROMPT = `Enhance this portrait photo while preserving the original identity and natural look.
+const PROMPT = `Enhance this uploaded image while preserving the original identity and natural look.
 Improve facial aesthetics with subtle, realistic adjustments:
 - natural skin smoothing (retain pores and texture, avoid plastic look)
 - even skin tone with a soft healthy glow
@@ -23,76 +14,96 @@ Improve facial aesthetics with subtle, realistic adjustments:
 Hair:
 - refine hair texture, reduce frizz, enhance natural shine
 Lighting & Color:
-- correct white balance
-- improve exposure and dynamic range
-- add soft cinematic lighting
-- natural color grading (not oversaturated)
+- correct white balance, improve exposure and dynamic range
+- add soft cinematic lighting, natural color grading (not oversaturated)
+- fix overexposed areas, recover highlight detail
 Background:
-- clean up distractions
-- subtly blur or depth-of-field effect
+- subtly blur background (depth-of-field effect)
 - enhance background colors and lighting consistency
 Overall:
-- high resolution, ultra-detailed
-- realistic, professional portrait finish
+- high resolution, ultra-detailed, realistic professional portrait finish
 - no artificial filters, no over-smoothing, no exaggerated features
 - maintain original facial structure and likeness exactly`;
 
-// Try newest → oldest. Update the first entry when Google releases new models.
-const CANDIDATE_MODELS = [
-  "gemini-3.1-flash-image-preview",       // newest (Feb 2026)
-  "gemini-2.5-flash-image",               // stable alternative
-  "gemini-2.0-flash-exp-image-generation", // original working name
+// Try v1alpha first — has wider model support than v1beta for experimental models
+const ENDPOINTS = [
+  { api: "v1alpha", model: "gemini-2.5-flash-preview-05-20" },
+  { api: "v1alpha", model: "gemini-2.5-flash-image" },
+  { api: "v1beta",  model: "gemini-2.5-flash-image" },
+  { api: "v1alpha", model: "gemini-2.0-flash-preview-image-generation" },
+  { api: "v1beta",  model: "gemini-2.0-flash-preview-image-generation" },
 ];
+
+async function tryEndpoint({ api, model }, imageBase64, mimeType, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/${api}/models/${model}:generateContent?key=${apiKey}`;
+
+  const body = {
+    contents: [{
+      role: "user",
+      parts: [
+        { inline_data: { mime_type: mimeType || "image/jpeg", data: imageBase64 } },
+        { text: PROMPT },
+      ],
+    }],
+    generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90_000); // 90s per attempt
+
+  try {
+    const res = await fetch(url, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify(body),
+      signal:  controller.signal,
+    });
+
+    if (res.status === 404 || res.status === 400) {
+      const err = await res.json().catch(() => ({}));
+      throw Object.assign(
+        new Error(err?.error?.message || `${model} not found`),
+        { isModelNotFound: true }
+      );
+    }
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `HTTP ${res.status}`);
+    }
+
+    const data  = await res.json();
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const img   = parts.find(p => p.inline_data?.mime_type?.startsWith("image/"));
+    if (!img) {
+      const txt = parts.find(p => p.text)?.text?.slice(0, 200) ?? "no text";
+      throw new Error(`No image in response: ${txt}`);
+    }
+    return { imageBase64: img.inline_data.data, mimeType: img.inline_data.mime_type };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export async function enhanceWithGemini(imageBuffer, mimeType) {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
 
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  const b64    = imageBuffer.toString("base64");
+  const errors = [];
 
-  const imagePart = {
-    inlineData: {
-      data: imageBuffer.toString("base64"),
-      mimeType: mimeType || "image/jpeg",
-    },
-  };
-
-  let lastError;
-  for (const modelName of CANDIDATE_MODELS) {
+  for (const ep of ENDPOINTS) {
     try {
-      console.log(`  [gemini] trying model: ${modelName}`);
-      const model = genAI.getGenerativeModel({ model: modelName });
-
-      const result = await model.generateContent({
-        contents: [{ role: "user", parts: [imagePart, { text: PROMPT }] }],
-        generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
-      });
-
-      const response = result.response;
-      const parts    = response.candidates?.[0]?.content?.parts ?? [];
-
-      const imgPart = parts.find((p) => p.inlineData?.mimeType?.startsWith("image/"));
-      if (!imgPart) {
-        const textPart = parts.find((p) => p.text);
-        throw new Error(`No image in response. Text: ${textPart?.text?.slice(0, 200) ?? "none"}`);
-      }
-
-      console.log(`  [gemini] success with model: ${modelName}`);
-      return {
-        imageBase64: imgPart.inlineData.data,
-        mimeType:    imgPart.inlineData.mimeType,
-      };
+      console.log(`  [gemini] trying ${ep.api}/${ep.model}...`);
+      const result = await tryEndpoint(ep, b64, mimeType, process.env.GEMINI_API_KEY);
+      console.log(`  [gemini] ✓ ${ep.model} succeeded`);
+      return result;
     } catch (err) {
-      lastError = err;
-      const msg = err.message ?? "";
-      // Only try next model on 404/not-found/403-suspended errors
-      const shouldRetry =
-        msg.includes("404") ||
-        msg.includes("not found") ||
-        msg.includes("not supported for generateContent");
-      if (!shouldRetry) throw err;
-      console.warn(`  [gemini] ${modelName} failed (${msg.slice(0, 80)}), trying next...`);
+      const msg = err.message.slice(0, 100);
+      console.log(`  [gemini] ✗ ${ep.model}: ${msg}`);
+      errors.push(`${ep.api}/${ep.model}: ${err.message}`);
+      if (!err.isModelNotFound) break;
     }
   }
 
-  throw lastError ?? new Error("All Gemini model variants failed");
+  throw new Error(`All Gemini endpoints failed:\n${errors.join("\n")}`);
 }

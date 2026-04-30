@@ -1,3 +1,12 @@
+/**
+ * Real-ESRGAN only pipeline — local Python, no face model needed
+ * Uses Real-ESRGAN x4plus for upscaling + sharpness, then OpenCV post-process.
+ * Faster than GFPGAN (no face detection), better for overall image quality.
+ * Model: RealESRGAN_x4plus (~67MB) — already downloaded by download_models.py
+ *
+ * This covers what GFPGAN misses: background clarity, overall sharpness, exposure.
+ */
+
 import { spawnSync }   from "child_process";
 import { writeFileSync, readFileSync, unlinkSync, existsSync } from "fs";
 import { tmpdir }      from "os";
@@ -6,7 +15,7 @@ import { fileURLToPath } from "url";
 import { dirname }       from "path";
 
 const __dir  = dirname(fileURLToPath(import.meta.url));
-const SCRIPT = join(__dir, "../../python/enhance_gfpgan.py");
+const SCRIPT = join(__dir, "../../python/enhance_realesrgan.py");
 
 function resolvePython() {
   const fromEnv = process.env.PYTHON_CMD;
@@ -14,25 +23,21 @@ function resolvePython() {
     const normalized = fromEnv.replace(/\\/g, "/");
     const r = spawnSync(normalized, ["--version"], { encoding: "utf8" });
     if (r.status === 0) return normalized;
-    throw new Error(
-      `Python not found at: "${normalized}"\n` +
-      `Fix: set PYTHON_CMD in .env using forward slashes:\n` +
-      `PYTHON_CMD=C:/Users/narendran.s/AppData/Local/Python/pythoncore-3.10-64/python.exe`
-    );
+    throw new Error(`Python not found at "${normalized}". Set PYTHON_CMD in .env with forward slashes.`);
   }
   for (const cmd of ["python3", "python"]) {
     if (spawnSync(cmd, ["--version"], { encoding: "utf8" }).status === 0) return cmd;
   }
-  throw new Error("Python not found in PATH. Set PYTHON_CMD in .env");
+  throw new Error("Python not found. Set PYTHON_CMD in .env");
 }
 
-export async function enhanceWithGFPGAN(imageBuffer, mimeType) {
-  if (!existsSync(SCRIPT)) throw new Error("GFPGAN script missing — check python/ folder");
+export async function enhanceWithRealESRGAN(imageBuffer, mimeType) {
+  if (!existsSync(SCRIPT)) throw new Error("Real-ESRGAN script missing — check python/ folder");
 
   const python  = resolvePython();
   const ext     = mimeType === "image/png" ? ".png" : ".jpg";
-  const inPath  = join(tmpdir(), `gfpgan_in_${Date.now()}${ext}`).replace(/\\/g, "/");
-  const outPath = join(tmpdir(), `gfpgan_out_${Date.now()}.jpg`).replace(/\\/g, "/");
+  const inPath  = join(tmpdir(), `esrgan_in_${Date.now()}${ext}`).replace(/\\/g, "/");
+  const outPath = join(tmpdir(), `esrgan_out_${Date.now()}.jpg`).replace(/\\/g, "/");
   const script  = SCRIPT.replace(/\\/g, "/");
 
   try {
@@ -42,30 +47,21 @@ export async function enhanceWithGFPGAN(imageBuffer, mimeType) {
       python,
       ["-W", "ignore", script, "--input", inPath, "--output", outPath],
       {
-        timeout:  300_000, // 5 min — first run loads ~340MB model weights, needs time
+        timeout:  180_000,
         encoding: "utf8",
-        env: {
-          ...process.env,
-          // Suppress torchvision deprecation warnings cluttering stderr
-          PYTHONWARNINGS: "ignore",
-        },
+        env: { ...process.env, PYTHONWARNINGS: "ignore" },
       }
     );
 
-    // spawnSync timeout returns status null
-    if (proc.status === null) {
-      throw new Error("GFPGAN timed out (5 min). Model may still be loading on first run — try again.");
-    }
+    if (proc.status === null) throw new Error("Real-ESRGAN timed out (3 min)");
     if (proc.status !== 0) {
-      // Filter out warning lines, only show actual errors
-      const errLines = (proc.stderr || "")
+      const err = (proc.stderr || "")
         .split("\n")
         .filter(l => !l.includes("UserWarning") && !l.includes("warnings.warn") && l.trim())
-        .join("\n")
-        .slice(0, 500);
-      throw new Error(errLines || "GFPGAN process failed");
+        .join("\n").slice(0, 400);
+      throw new Error(err || "Real-ESRGAN process failed");
     }
-    if (!existsSync(outPath)) throw new Error("GFPGAN produced no output file");
+    if (!existsSync(outPath)) throw new Error("Real-ESRGAN produced no output");
 
     return { imageBase64: readFileSync(outPath).toString("base64"), mimeType: "image/jpeg" };
   } finally {

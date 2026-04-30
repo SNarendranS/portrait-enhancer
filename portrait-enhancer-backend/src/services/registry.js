@@ -15,6 +15,8 @@ import { enhanceWithStability }  from "./stability.js";
 import { enhanceWithCloudinary } from "./cloudinary.js";
 import { enhanceWithGFPGAN }     from "./gfpgan.js";
 import { enhanceWithOpenCV }     from "./opencv.js";
+import { enhanceWithPicwish } from "./picwish.js";
+import { enhanceWithRealESRGAN } from "./realesrgan.js";
 
 /**
  * @typedef {Object} ServiceDefinition
@@ -70,6 +72,24 @@ export const SERVICE_REGISTRY = [
     type:        "local",
     description: "OpenCV + Pillow — rule-based, no models, always works",
     fn:          enhanceWithOpenCV,
+    isAvailable: () => true,
+  },
+    {
+    id:          "picwish",
+    name:        "PicWish",
+    tier:        "free tier",
+    type:        "cloud",
+    description: "api picwish",
+    fn:          enhanceWithPicwish,
+    isAvailable: () => true,
+  },
+    {
+    id:          "realesrgan",
+    name:        "Real ESRGAN",
+    tier:        "local",
+    type:        "local",
+    description: "real ESRGAN, no models, always works",
+    fn:          enhanceWithRealESRGAN,
     isAvailable: () => true,
   },
 ];
