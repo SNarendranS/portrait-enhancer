@@ -3,10 +3,13 @@
  * Free: 3 credits/day on free account (no billing needed)
  * Sign up: https://picwish.com → API → get key
  *
- * Correct base URL: https://techhk.aoscdn.com  (NOT picwish.com)
- * Endpoint:  POST /api/tasks/visual/clarity   (portrait enhancement, async)
- * Poll:       GET /api/tasks/visual/clarity/{task_id}
- * Result field: data.image  (when data.state === 1)
+ * Base URL:  https://techhk.aoscdn.com
+ *
+ * PicWish has two relevant endpoints — we try the newer one first:
+ *   v2  POST /api/tasks/visual/quality      (portrait quality enhancement)
+ *   v1  POST /api/tasks/visual/clarity      (older, may 404 on some keys)
+ *
+ * State codes: 1 = queued, 2 = processing, 4 = done, -1 = error
  */
 
 import axios    from "axios";
@@ -14,66 +17,77 @@ import FormData from "form-data";
 
 const BASE = "https://techhk.aoscdn.com";
 
+// Try endpoint paths in order; return on first success
+const UPLOAD_PATHS = [
+  "/api/tasks/visual/quality",   // v2 — portrait enhancement
+  "/api/tasks/visual/clarity",   // v1 — older alias
+];
+
+async function uploadTask(imageBuffer, mimeType, apiKey) {
+  let lastErr;
+  for (const path of UPLOAD_PATHS) {
+    const form = new FormData();
+    form.append("image_file", imageBuffer, {
+      filename:    "photo.jpg",
+      contentType: mimeType || "image/jpeg",
+    });
+
+    try {
+      const res = await axios.post(`${BASE}${path}`, form, {
+        headers: { ...form.getHeaders(), "X-API-KEY": apiKey },
+        timeout: 30_000,
+        validateStatus: null, // handle status manually
+      });
+
+      if (res.status === 404) {
+        lastErr = new Error(`PicWish ${path} → 404`);
+        continue; // try next path
+      }
+      if (res.data?.status !== 200) {
+        throw new Error(`PicWish upload failed (${path}): ${JSON.stringify(res.data)}`);
+      }
+
+      const taskId = res.data?.data?.task_id;
+      if (!taskId) throw new Error(`PicWish returned no task_id from ${path}`);
+      console.log(`  [picwish] uploaded via ${path}, task_id=${taskId}`);
+      return { taskId, pollPath: path };
+    } catch (err) {
+      if (err.message.includes("404")) { lastErr = err; continue; }
+      throw err;
+    }
+  }
+  throw lastErr ?? new Error("PicWish: all upload paths failed");
+}
+
 export async function enhanceWithPicwish(imageBuffer, mimeType) {
   if (!process.env.PICWISH_API_KEY) throw new Error("PICWISH_API_KEY not set");
+  const apiKey = process.env.PICWISH_API_KEY;
 
-  // Step 1: Upload image and create enhancement task
-  const form = new FormData();
-  form.append("image_file", imageBuffer, {
-    filename:    "photo.jpg",
-    contentType: mimeType || "image/jpeg",
-  });
-  form.append("sync", "0"); // async mode
+  const { taskId, pollPath } = await uploadTask(imageBuffer, mimeType, apiKey);
 
-  const uploadRes = await axios.post(
-    `${BASE}/api/tasks/visual/clarity`,
-    form,
-    {
-      headers: {
-        ...form.getHeaders(),
-        "X-API-KEY": process.env.PICWISH_API_KEY,
-      },
-      timeout: 30_000,
-    }
-  );
+  // Poll until state=4 (done) or state=-1 (error)
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 1500));
 
-  if (uploadRes.data?.status !== 200) {
-    throw new Error(`PicWish upload failed: ${JSON.stringify(uploadRes.data)}`);
-  }
-
-  const taskId = uploadRes.data?.data?.task_id;
-  if (!taskId) throw new Error("PicWish returned no task_id");
-
-  // Step 2: Poll for result (state=1 means done, state<0 means error)
-  for (let i = 0; i < 30; i++) {
-    await new Promise(r => setTimeout(r, 1000));
-
-    const pollRes = await axios.get(
-      `${BASE}/api/tasks/visual/clarity/${taskId}`,
-      {
-        headers: { "X-API-KEY": process.env.PICWISH_API_KEY },
-        timeout: 10_000,
-      }
-    );
+    const pollRes = await axios.get(`${BASE}${pollPath}/${taskId}`, {
+      headers: { "X-API-KEY": apiKey },
+      timeout: 15_000,
+    });
 
     const state = pollRes.data?.data?.state;
 
-    if (state === 1) {
+    if (state === 4) {
       const imageUrl = pollRes.data?.data?.image;
-      if (!imageUrl) throw new Error("PicWish: no image URL in result");
-
+      if (!imageUrl) throw new Error("PicWish: done but no image URL");
       const imgRes = await axios.get(imageUrl, { responseType: "arraybuffer", timeout: 30_000 });
-      return {
-        imageBase64: Buffer.from(imgRes.data).toString("base64"),
-        mimeType:    "image/jpeg",
-      };
+      return { imageBase64: Buffer.from(imgRes.data).toString("base64"), mimeType: "image/jpeg" };
     }
 
-    if (state < 0) {
-      throw new Error(`PicWish task failed with state: ${state} — ${JSON.stringify(pollRes.data)}`);
+    if (state === -1) {
+      throw new Error(`PicWish task failed: ${JSON.stringify(pollRes.data)}`);
     }
-    // state 0 = pending, keep polling
+    // 1=queued, 2=processing — keep polling
   }
 
-  throw new Error("PicWish timed out waiting for result (30s)");
+  throw new Error("PicWish timed out after 60s");
 }

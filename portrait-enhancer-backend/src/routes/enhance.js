@@ -18,7 +18,6 @@ enhanceRouter.post("/", upload.single("image"), async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: "No image uploaded" });
 
-    // Support both "selectedServices" (frontend) and legacy "services" field name
     const raw = req.body.selectedServices ?? req.body.services ?? null;
     const selected = raw ? JSON.parse(raw) : SERVICE_REGISTRY.map(s => s.id);
 
@@ -26,11 +25,21 @@ enhanceRouter.post("/", upload.single("image"), async (req, res, next) => {
     console.log(`Enhancing with services: ${JSON.stringify(selected)}`);
 
     const result = await runSelected(selected, req.file.buffer, req.file.mimetype);
-    res.json(result);
-  } catch (err) { next(err); }
+
+    // Guard: timeout middleware may have already sent a 503 while local
+    // models (GFPGAN / Real-ESRGAN) were still running. Without this check
+    // Express throws ERR_HTTP_HEADERS_SENT and crashes the request handler.
+    if (!res.headersSent) {
+      res.json(result);
+    } else {
+      console.log("[enhance] response already sent (timeout); discarding late result.");
+    }
+  } catch (err) {
+    if (!res.headersSent) next(err);
+  }
 });
 
-// GET /api/enhance/services  — full service metadata for the frontend
+// GET /api/enhance/services
 enhanceRouter.get("/services", (_, res) => {
   res.json({
     services: SERVICE_REGISTRY.map(s => ({
@@ -44,7 +53,7 @@ enhanceRouter.get("/services", (_, res) => {
   });
 });
 
-// GET /api/enhance/status  — backwards-compat alias for /services
+// GET /api/enhance/status  — backwards-compat alias
 enhanceRouter.get("/status", (_, res) => {
   res.json({
     services: SERVICE_REGISTRY.map(s => ({

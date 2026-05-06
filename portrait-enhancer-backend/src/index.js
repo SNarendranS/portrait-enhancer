@@ -8,9 +8,12 @@ import { SERVICE_REGISTRY } from "./services/registry.js";
 const app  = express();
 const PORT = process.env.PORT || 4000;
 
-// Increase default socket timeout to 3 minutes — local ML models can be slow
-// This prevents ECONNRESET when Python takes longer than Node's default keep-alive
-const REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
+// 10 minutes — GFPGAN and Real-ESRGAN load ~340 MB + ~65 MB of model weights
+// on first run, which takes 3-7 minutes on a typical laptop.
+// The old 3-minute timeout was firing before they finished, sending a 503,
+// then when the models completed Express tried to send a second response and
+// crashed with ERR_HTTP_HEADERS_SENT.
+const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 
 const ALLOWED_ORIGINS = [
   "http://localhost:5173",
@@ -22,7 +25,7 @@ const ALLOWED_ORIGINS = [
 app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
 
-// Per-request timeout middleware — responds with JSON 503 instead of hanging/crashing
+// Per-request timeout middleware
 app.use((req, res, next) => {
   req.socket.setTimeout(REQUEST_TIMEOUT_MS);
   res.setTimeout(REQUEST_TIMEOUT_MS, () => {
@@ -47,11 +50,8 @@ const server = app.listen(PORT, () => {
   console.log("");
 });
 
-// Prevent ECONNRESET on slow responses — keep-alive timeout must be
-// longer than the request timeout so sockets don't close mid-response
 server.keepAliveTimeout = REQUEST_TIMEOUT_MS + 5000;
 server.headersTimeout   = REQUEST_TIMEOUT_MS + 10000;
 
-// Graceful shutdown
 process.on("SIGTERM", () => server.close(() => process.exit(0)));
 process.on("SIGINT",  () => server.close(() => process.exit(0)));
