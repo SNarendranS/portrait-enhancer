@@ -30,7 +30,12 @@ export default function App() {
   const [error,             setError]            = useState(null);
   const [dragOver,          setDragOver]         = useState(false);
   const [activeResult,      setActiveResult]     = useState(null);   // which result is shown in compare
-  const fileRef = useRef(null);
+  const [cameraOpen,        setCameraOpen]       = useState(false);
+  const [cameraReady,       setCameraReady]      = useState(false);
+  const [cameraError,       setCameraError]      = useState(null);
+  const fileRef   = useRef(null);
+  const videoRef  = useRef(null);
+  const streamRef = useRef(null);
 
   // Fetch service list from backend
   useEffect(() => {
@@ -66,6 +71,61 @@ export default function App() {
     processFile(e.dataTransfer.files[0]);
   }, [processFile]);
 
+  // ── Camera helpers ──────────────────────────────────────────────────────────
+  const openCamera = useCallback(async () => {
+    setCameraError(null);
+    setCameraReady(false);
+    setCameraOpen(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current.play();
+          setCameraReady(true);
+        };
+      }
+    } catch (err) {
+      setCameraError('Camera access denied. Please allow camera permission and try again.');
+      setCameraOpen(false);
+    }
+  }, []);
+
+  const closeCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+    }
+    setCameraOpen(false);
+    setCameraReady(false);
+    setCameraError(null);
+  }, []);
+
+  const capturePhoto = useCallback(() => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width  = video.videoWidth  || 1280;
+    canvas.height = video.videoHeight || 720;
+    const ctx = canvas.getContext('2d');
+    // Draw un-mirrored: flip canvas horizontally so the saved image
+    // matches reality (the preview is CSS-mirrored for selfie feel,
+    // but we capture the real orientation).
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    closeCamera();
+    setOriginal(dataUrl);
+    setResults([]);
+    setActiveResult(null);
+    setError(null);
+  }, [closeCamera]);
+
   const toggleService = (id) => {
     setSelected(prev => {
       const next = new Set(prev);
@@ -79,8 +139,6 @@ export default function App() {
     if (!original || selected.size === 0) return;
     setLoading(true);
     setError(null);
-    setResults([]);
-    setActiveResult(null);
 
     try {
       const blob = await fetch(original).then(r => r.blob());
@@ -88,16 +146,27 @@ export default function App() {
       form.append("image", blob, "photo.jpg");
       form.append("selectedServices", JSON.stringify([...selected]));
 
-      const res  = await fetch("/api/enhance", { method: "POST", body: form });
-      const data = await res.json();
+      const res = await fetch("/api/enhance", { method: "POST", body: form });
 
-      if (!data.success && (!data.results || data.results.length === 0)) {
-        throw new Error(data.message || "All services failed");
+      // Safely parse JSON - 500s or ECONNRESET may return HTML or empty body
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        const hint = res.status === 500
+          ? "Server error (500) - check backend logs. Python process may have crashed."
+          : `Server returned non-JSON (HTTP ${res.status})`;
+        throw new Error(hint);
       }
 
-      setResults(data.results ?? []);
-      // Auto-select first successful result
-      const firstSuccess = data.results?.find(r => r.status === "success");
+      if (!res.ok && (!data.results || data.results.length === 0)) {
+        throw new Error(data.message || `Request failed with status ${res.status}`);
+      }
+
+      const newResults = data.results ?? [];
+      setResults(newResults);
+      const firstSuccess = newResults.find(r => r.status === "success");
       if (firstSuccess) setActiveResult(firstSuccess.serviceId);
     } catch (err) {
       setError(err.message);
@@ -132,14 +201,26 @@ export default function App() {
         onToggle={toggleService}
       />
 
-      {/* Upload zone */}
+      {/* Camera modal */}
+      {cameraOpen && (
+        <CameraModal
+          videoRef={videoRef}
+          ready={cameraReady}
+          error={cameraError}
+          onCapture={capturePhoto}
+          onClose={closeCamera}
+        />
+      )}
+
+      {/* Upload/Capture zone */}
       {!original && (
         <DropZone
           dragOver={dragOver}
           onDrop={onDrop}
           onDragOver={e => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
-          onClick={() => fileRef.current?.click()}
+          onUploadClick={() => fileRef.current?.click()}
+          onCameraClick={openCamera}
         />
       )}
 
@@ -468,24 +549,115 @@ function Label({ side, text }) {
 }
 
 // ── Drop zone ─────────────────────────────────────────────────────────────────
-function DropZone({ dragOver, onClick, onDrop, onDragOver, onDragLeave }) {
+function DropZone({ dragOver, onUploadClick, onCameraClick, onDrop, onDragOver, onDragLeave }) {
   return (
     <div
-      onClick={onClick}
       onDrop={onDrop}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       style={{
         border: `2px dashed ${dragOver ? "#8b5cf6" : "#2a2a2a"}`,
-        borderRadius: 12, padding: "60px 40px",
-        display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
-        cursor: "pointer", transition: "border-color .2s",
+        borderRadius: 12, padding: "48px 40px",
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 16,
+        transition: "border-color .2s",
         background: dragOver ? "rgba(139,92,246,.05)" : "transparent",
       }}
     >
-      <div style={{ fontSize: 36 }}>📷</div>
-      <div style={{ fontSize: 15, fontWeight: 500 }}>Drop a portrait here</div>
-      <div style={{ fontSize: 13, color: "#666" }}>or click to browse · JPG, PNG, WEBP</div>
+      <div style={{ fontSize: 40 }}>🖼️</div>
+      <div style={{ fontSize: 15, fontWeight: 500, color: "#ccc" }}>
+        Upload or capture a portrait
+      </div>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
+        <button
+          onClick={onUploadClick}
+          style={{
+            ...btnStyle("primary"),
+            background: "#1e1e2e", border: "1px solid #3a3a4a", color: "#ccc",
+          }}
+        >
+          📁 Upload photo
+        </button>
+        <button
+          onClick={onCameraClick}
+          style={{ ...btnStyle("primary"), background: "#8b5cf6" }}
+        >
+          📷 Take selfie
+        </button>
+      </div>
+      <div style={{ fontSize: 12, color: "#555" }}>
+        or drag &amp; drop · JPG, PNG, WEBP
+      </div>
+    </div>
+  );
+}
+
+// ── Camera Modal ──────────────────────────────────────────────────────────────
+function CameraModal({ videoRef, ready, error, onCapture, onClose }) {
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(0,0,0,.85)", display: "flex",
+      alignItems: "center", justifyContent: "center",
+      padding: 20,
+    }}>
+      <div style={{
+        background: "#0e0e0e", borderRadius: 16, overflow: "hidden",
+        border: "1px solid #2a2a2a", width: "100%", maxWidth: 640,
+        display: "flex", flexDirection: "column",
+      }}>
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "14px 18px", borderBottom: "1px solid #1e1e1e",
+        }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: "#e0e0e0" }}>📷 Take a selfie</span>
+          <button onClick={onClose} style={{
+            background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 18, lineHeight: 1,
+          }}>✕</button>
+        </div>
+
+        {/* Video / error area */}
+        <div style={{ position: "relative", background: "#000", minHeight: 280 }}>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{ width: "100%", display: "block", maxHeight: 400, objectFit: "cover", transform: "scaleX(-1)" }}
+          />
+          {!ready && !error && (
+            <div style={{
+              position: "absolute", inset: 0, display: "flex",
+              alignItems: "center", justifyContent: "center", color: "#555", fontSize: 13,
+            }}>
+              <Spinner /> &nbsp; Starting camera…
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <div style={{ padding: "12px 18px", color: "#f87171", fontSize: 13, background: "#1a0808" }}>
+            {error}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ padding: "16px 18px", display: "flex", gap: 10, justifyContent: "center" }}>
+          <button
+            onClick={onCapture}
+            disabled={!ready}
+            style={{
+              ...btnStyle("primary"),
+              opacity: ready ? 1 : 0.4,
+              cursor: ready ? "pointer" : "not-allowed",
+              fontSize: 15, padding: "12px 32px",
+            }}
+          >
+            📸 Capture
+          </button>
+          <button onClick={onClose} style={btnStyle("ghost")}>Cancel</button>
+        </div>
+      </div>
     </div>
   );
 }

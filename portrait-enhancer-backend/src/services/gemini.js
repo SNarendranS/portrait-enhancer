@@ -1,35 +1,44 @@
 /**
- * Gemini — uses v1alpha API which has broader model availability than v1beta
- * Also adds a longer timeout since the model is slow on first inference
+ * Gemini — smart portrait enhancer with auto-defect detection.
+ * Fixes oversaturation / blown-out highlights before beautification,
+ * so office webcam photos (harsh ceiling lights, overexposed bg) are
+ * handled correctly instead of being further saturated.
  */
 
-const PROMPT = `Enhance this uploaded image while preserving the original identity and natural look.
-Improve facial aesthetics with subtle, realistic adjustments:
-- natural skin smoothing (retain pores and texture, avoid plastic look)
-- even skin tone with a soft healthy glow
-- reduce blemishes, dark spots, and under-eye shadows naturally
-- enhance eyes slightly (sharpness, brightness, catchlight clarity)
-- whiten teeth naturally (no over-bright artificial white)
-- improve facial lighting and symmetry subtly
-Hair:
-- refine hair texture, reduce frizz, enhance natural shine
-Lighting & Color:
-- correct white balance, improve exposure and dynamic range
-- add soft cinematic lighting, natural color grading (not oversaturated)
-- fix overexposed areas, recover highlight detail
-Background:
-- subtly blur background (depth-of-field effect)
-- enhance background colors and lighting consistency
-Overall:
-- high resolution, ultra-detailed, realistic professional portrait finish
-- no artificial filters, no over-smoothing, no exaggerated features
-- maintain original facial structure and likeness exactly`;
+const PROMPT = `You are a professional photo retouching AI. Before applying any enhancements, first analyse the image for these common defects and fix them intelligently:
 
-// Try v1alpha first — has wider model support than v1beta for experimental models
+STEP 1 — AUTO-CORRECT DEFECTS (apply only what is needed):
+- Overexposure / blown-out highlights: recover ceiling lights, window glare, harsh specular reflections on skin. Bring highlight luminosity down so detail is visible.
+- Oversaturation: if colours look unnaturally vivid or skin looks orange/red, reduce saturation to natural levels first.
+- Colour cast (cool/warm): balance white point so skin tones read as natural.
+- Background light noise: reduce distracting bright spots, halos, or blown ceiling/fluorescent fixtures in the background using localised tone-mapping.
+- Lens flare / glare streaks: suppress without destroying background detail.
+
+STEP 2 — PORTRAIT BEAUTIFICATION (subtle, realistic, preserve identity):
+- Skin: smooth texture gently (keep pores visible), even out tone, reduce blemishes, dark circles, and forehead shine naturally.
+- Eyes: sharpen iris detail, add slight brightness/catchlight clarity.
+- Teeth: whiten naturally — no over-bright artificial white; just remove yellow cast.
+- Eyebrows: lightly define without overdrawing.
+- Hair: reduce frizz, add natural shine.
+
+STEP 3 — CINEMATIC FINISH:
+- Depth-of-field: subtly blur background to separate subject.
+- Lighting: add soft, flattering portrait lighting while matching the original scene direction.
+- Dynamic range: ensure shadows have detail and highlights are not clipped.
+- Colour grade: muted, natural palette — not Instagram-filtered.
+- Final output: high resolution, ultra-realistic, professional portrait quality.
+
+IMPORTANT CONSTRAINTS:
+- Do NOT change facial structure or identity.
+- Do NOT over-smooth to a plastic/AI look.
+- Do NOT oversaturate — the goal is natural, not vivid.
+- If the original image is already well-exposed, skip Step 1 and go straight to Step 2.
+- Output the enhanced image only, no text.`;
+
 const ENDPOINTS = [
-  { api: "v1beta", model: "gemini-3.1-flash-image-preview" },
-  { api: "v1beta", model: "gemini-2.5-flash-image" },
-  { api: "v1beta", model: "gemini-3-pro-image-preview" },
+  { api: "v1beta", model: "gemini-2.0-flash-exp-image-generation" },
+  { api: "v1beta", model: "gemini-2.5-flash-preview-05-20" },
+  { api: "v1beta", model: "gemini-2.0-flash-thinking-exp-01-21" },
 ];
 
 async function tryEndpoint({ api, model }, imageBase64, mimeType, apiKey) {
